@@ -1,14 +1,13 @@
 """
-Memory helpers and per-agent memory management.
-Provides:
-- ensure_project_memory
-- read_agent_memory
-- write_agent_memory
-- save_state_json
-- migrate_project_state_md
+Memory helpers and per-agent memory management with compatibility wrappers.
+Provides per-agent memory files at memory/{project}/{agent}.json and preserves
+backwards compatibility with existing agents/memory.py functions by proxying and
+migrating old project_state.md when needed.
 """
 from pathlib import Path
 import json
+import agents.memory as old_mem
+from datetime import datetime
 
 BASE = Path(__file__).resolve().parent
 
@@ -66,6 +65,94 @@ def migrate_project_state_md(project_name: str):
     # Save migration into planner memory
     m = read_agent_memory(project_name, "planner")
     m.setdefault("history", [])
-    m["history"].append({"migrated_project_state_md": content})
+    m["history"].append({"migrated_project_state_md": content, "migrated_at": str(datetime.utcnow())})
     write_agent_memory(project_name, "planner", m)
     return True
+
+# =========================
+# Backwards-compatible wrappers for existing agents.memory API
+# These proxy to agents.memory but also maintain per-agent JSON storage when appropriate
+# =========================
+
+def set_memory_project(name):
+    # Proxy to old module for directory setup
+    old_mem.set_memory_project(name)
+    ensure_project_memory(name)
+    # Migrate old md if present
+    migrate_project_state_md(name)
+
+
+def get_active_project():
+    return old_mem.get_active_project()
+
+
+def load_state():
+    # Prefer old_mem state file for backward compatibility but also store a copy in state.json
+    state = old_mem.load_state()
+    # Persist a copy into memory/{project}/state.json
+    project = state.get("project", {}).get("name") or get_active_project()
+    if project:
+        save_state_json(project, state)
+    return state
+
+
+def save_state(state):
+    # Save using old_mem to preserve behavior
+    old_mem.save_state(state)
+    project = state.get("project", {}).get("name") or get_active_project()
+    if project:
+        save_state_json(project, state)
+
+
+def update_project(name, description=""):
+    old_mem.update_project(name, description)
+    # Also ensure the state.json exists
+    state = old_mem.load_state()
+    save_state_json(name, state)
+
+
+def add_test(result):
+    old_mem.add_test(result)
+    project = get_active_project()
+    # Append to tester per-agent memory
+    mem = read_agent_memory(project, "tester")
+    mem.setdefault("history", [])
+    mem["history"].append({"time": str(datetime.utcnow()), "result": result})
+    write_agent_memory(project, "tester", mem)
+
+
+def add_issue(issue):
+    old_mem.add_issue(issue)
+    project = get_active_project()
+    mem = read_agent_memory(project, "tester_issues")
+    mem.setdefault("history", [])
+    mem["history"].append({"time": str(datetime.utcnow()), "issue": issue})
+    write_agent_memory(project, "tester_issues", mem)
+
+
+def add_agent_result(agent, result):
+    old_mem.add_agent_result(agent, result)
+    project = get_active_project()
+    mem = read_agent_memory(project, agent)
+    mem.setdefault("history", [])
+    mem["history"].append({"time": str(datetime.utcnow()), "result": result})
+    write_agent_memory(project, agent, mem)
+
+# Export older helper names
+def save_architecture(content):
+    old_mem.save_architecture(content)
+
+def add_decision(decision):
+    old_mem.add_decision(decision)
+
+def add_file(path):
+    old_mem.add_file(path)
+
+def add_task(task):
+    old_mem.add_task(task)
+
+def add_change(change):
+    old_mem.add_change(change)
+
+def show_memory():
+    return load_state()
